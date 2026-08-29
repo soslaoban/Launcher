@@ -1,0 +1,9 @@
+node_modules/
+dist/
+.npm-cache/
+.git-reinitialized-backup/
+*.tsbuildinfo
+~$*
+.env
+.env.*
+!.env.example
