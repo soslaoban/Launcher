@@ -289,10 +289,6 @@ body { min-width: 0; }
 .anime-toggle-list .setting-row small { display: block; margin: 3px 0 0 26px; color: var(--muted); font-size: 10px; line-height: 1.35; }
 @media (max-width: 620px) { .anime-setting-grid { grid-template-columns: 1fr; } }
 
-:root[data-theme='anime'][data-anime-icon-spacing='tight'] .compact-launch { gap: 5px; }
-:root[data-theme='anime'][data-anime-icon-spacing='tight'] .card-main { gap: 8px; }
-:root[data-theme='anime'][data-anime-icon-spacing='loose'] .compact-launch { gap: 15px; }
-:root[data-theme='anime'][data-anime-icon-spacing='loose'] .card-main { gap: 18px; }
 :root[data-theme='anime'][data-anime-grid-spacing='tight'] .apps-container { gap: 10px; }
 :root[data-theme='anime'][data-anime-grid-spacing='normal'] .apps-container { gap: 16px; }
 :root[data-theme='anime'][data-anime-grid-spacing='wide'] .apps-container { gap: 24px; }
@@ -310,3 +306,8 @@ body { min-width: 0; }
 :root[data-theme='anime'][data-anime-card-size='large'] .list-card { min-height: 108px; }
 :root[data-theme='anime'][data-anime-card-size='large'] .compact-card { min-height: 140px; }
 :root[data-theme='anime'][data-anime-card-size='large'] .compact-launch .app-icon { width: 76px; height: 76px; flex-basis: 76px; }
+
+/* In compact view, icon spacing controls the horizontal distance between neighboring apps. */
+:root[data-theme='anime'][data-anime-icon-spacing='tight'] .apps-container.compact { column-gap: 8px; }
+:root[data-theme='anime'][data-anime-icon-spacing='normal'] .apps-container.compact { column-gap: 16px; }
+:root[data-theme='anime'][data-anime-icon-spacing='loose'] .apps-container.compact { column-gap: 26px; }
