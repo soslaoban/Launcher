@@ -158,6 +158,10 @@ function normalizeExecutablePath(value: string) {
   return normalized.length > 3 ? normalized.replace(/[\\/]+$/, '') : normalized
 }
 
+function isLaunchablePath(value: string) {
+  return /\.(exe|bat)$/i.test(value.trim())
+}
+
 function parseArguments(value: string) {
   const matches = value.match(/"[^"\\]*(?:\\.[^"\\]*)*"|'[^']*'|\S+/g) || []
   return matches.map((part) => part.replace(/^['"]|['"]$/g, ''))
@@ -296,6 +300,10 @@ export default function App() {
     localStorage.setItem('launcher-brand-name', brandName || '启动器')
     if (brandIcon) localStorage.setItem('launcher-brand-icon', brandIcon); else localStorage.removeItem('launcher-brand-icon')
   }, [anime, apps, background, brandIcon, brandName, categories, layout, sidebarCollapsed, sort, storageReady, theme, view])
+  useEffect(() => {
+    if (!isTauri() || !storageReady) return
+    void invokeDesktop('set_tray_icon', { iconDataUrl: brandIcon || null }).catch(() => undefined)
+  }, [brandIcon, storageReady])
   useEffect(() => {
     const root = document.documentElement
     root.dataset.theme = theme
@@ -467,7 +475,7 @@ export default function App() {
   }
   const toggleFavorite = (id: string) => setApps((current) => current.map((item) => item.id === id ? { ...item, isFavorite: !item.isFavorite } : item))
   const removeApp = (app: AppRecord) => {
-    if (window.confirm(`确定从启动器移除“${app.name}”吗？\n\n只删除启动器记录，不删除磁盘上的 exe 文件。`)) {
+    if (window.confirm(`确定从启动器移除“${app.name}”吗？\n\n只删除启动器记录，不删除磁盘上的源文件。`)) {
       setApps((current) => current.filter((item) => item.id !== app.id)); showToast('已从启动器移除')
     }
   }
@@ -503,7 +511,7 @@ export default function App() {
   const openAddApp = () => { setEditing(null); setPendingPath(''); setPendingShortcut(null); setModal('add') }
   const selectExecutablePath = (value: string) => {
     const path = normalizePath(value)
-    if (!path.toLowerCase().endsWith('.exe')) { showToast('只能添加 .exe 文件或 .lnk 快捷方式'); return }
+    if (!isLaunchablePath(path)) { showToast('只能添加 .exe、.bat 文件或 .lnk 快捷方式'); return }
     const editingExisting = modal === 'edit' && !!editing
     if (!editingExisting) setEditing(null)
     setPendingPath(path)
@@ -514,7 +522,7 @@ export default function App() {
     if (!isTauri()) { showToast('浏览器预览无法解析 Windows 快捷方式'); return }
     try {
       const shortcut = await invokeDesktop<ShortcutDetails>('resolve_shortcut', { path: normalizePath(value) })
-      if (!shortcut || !shortcut.targetPath.toLowerCase().endsWith('.exe')) throw new Error('快捷方式目标不是 .exe 文件')
+      if (!shortcut || !isLaunchablePath(shortcut.targetPath)) throw new Error('快捷方式目标不是 .exe 或 .bat 文件')
       const editingExisting = modal === 'edit' && !!editing
       if (!editingExisting) setEditing(null)
       setPendingPath(normalizePath(shortcut.targetPath))
@@ -530,8 +538,8 @@ export default function App() {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
   const handleDroppedPaths = (paths: string[]) => {
-    const path = paths.find((item) => /\.(exe|lnk)$/i.test(item))
-    if (!path) { showToast('请拖入 .exe 文件或 .lnk 快捷方式'); return }
+    const path = paths.find((item) => /\.(exe|bat|lnk)$/i.test(item))
+    if (!path) { showToast('请拖入 .exe、.bat 文件或 .lnk 快捷方式'); return }
     if (/\.lnk$/i.test(path)) void selectShortcutPath(path); else selectExecutablePath(path)
   }
   const pickExecutable = async () => {
@@ -541,7 +549,7 @@ export default function App() {
         title: '选择可执行文件或快捷方式',
         multiple: false,
         directory: false,
-        filters: [{ name: 'Windows 可执行文件和快捷方式', extensions: ['exe', 'lnk'] }],
+        filters: [{ name: 'Windows 应用、批处理和快捷方式', extensions: ['exe', 'bat', 'lnk'] }],
       })
       if (typeof selected === 'string') {
         if (/\.lnk$/i.test(selected)) await selectShortcutPath(selected); else selectExecutablePath(selected)
@@ -569,15 +577,15 @@ export default function App() {
     if (!file) return
     const isFolderImport = files.length > 1 || !file.name.toLowerCase().endsWith('.json')
     if (isFolderImport) {
-      const candidates = files.filter((item) => /\.(exe|lnk)$/i.test(item.name))
-      if (!candidates.length) { showToast('文件夹中没有找到 .exe 或 .lnk 文件'); event.target.value = ''; return }
+      const candidates = files.filter((item) => /\.(exe|bat|lnk)$/i.test(item.name))
+      if (!candidates.length) { showToast('文件夹中没有找到 .exe、.bat 或 .lnk 文件'); event.target.value = ''; return }
       const relativeRoot = (candidates[0] as File & { webkitRelativePath?: string }).webkitRelativePath || candidates[0].name
       const folderName = relativeRoot.split('/')[0] || '导入应用'
       const categoryId = `category-${Date.now()}`
       const importedApps: AppRecord[] = candidates.map((item, index) => {
         const relativePath = (item as File & { webkitRelativePath?: string }).webkitRelativePath || item.name
         const isShortcut = /\.lnk$/i.test(item.name)
-        const name = item.name.replace(/\.(exe|lnk)$/i, '')
+        const name = item.name.replace(/\.(exe|bat|lnk)$/i, '')
         return { id: `app-${Date.now()}-${index}`, name, executablePath: relativePath, categoryId, icon: name.slice(0, 2).toUpperCase(), isFavorite: false, notes: '', arguments: '', workingDirectory: '', launchCount: 0, lastLaunchedAt: null, createdAt: new Date().toISOString().slice(0, 10), healthy: !isShortcut }
       })
       setCategories((current) => [...current, { id: categoryId, name: folderName }])
@@ -594,7 +602,7 @@ export default function App() {
         if (!Array.isArray(parsed.apps) || !Array.isArray(parsed.categories)) throw new Error('invalid')
         const importedApps = parsed.apps.map((item: AppRecord) => {
           const executablePath = normalizeExecutablePath(String(item.executablePath || ''))
-          return { ...item, executablePath, arguments: String(item.arguments || ''), notes: '', healthy: item.healthy !== false && executablePath.toLowerCase().endsWith('.exe') }
+          return { ...item, executablePath, arguments: String(item.arguments || ''), notes: '', healthy: item.healthy !== false && isLaunchablePath(executablePath) }
         })
         setApps(importedApps); setCategories(parsed.categories); setView('all'); logEvent('import-json', { count: importedApps.length }); showToast(`已导入 ${importedApps.length} 个应用`)
       } catch { showToast('导入失败：JSON 文件格式无效') }
@@ -608,7 +616,7 @@ export default function App() {
       const selected = await open({ title: '选择应用目录', directory: true, multiple: false })
       if (typeof selected !== 'string') return
       const discovered = await invokeDesktop<DiscoveredApplication[]>('discover_applications', { path: selected })
-      if (!Array.isArray(discovered) || !discovered.length) { showToast('目录中没有找到可用的 .exe 或 .lnk'); return }
+      if (!Array.isArray(discovered) || !discovered.length) { showToast('目录中没有找到可用的 .exe、.bat 或 .lnk'); return }
       const categoryId = `category-${Date.now()}`
       const importedApps: AppRecord[] = discovered.map((item, index) => ({
         id: `app-${Date.now()}-${index}`,
@@ -637,7 +645,7 @@ export default function App() {
     if (!isTauri()) {
       setApps((current) => current.map((app) => {
         const executablePath = normalizeExecutablePath(app.executablePath)
-        return { ...app, executablePath, healthy: executablePath.toLowerCase().endsWith('.exe') }
+        return { ...app, executablePath, healthy: isLaunchablePath(executablePath) }
       }))
       logEvent('refresh-status', { mode: 'browser' })
       showToast('浏览器预览无法检查真实文件路径')
@@ -692,7 +700,7 @@ export default function App() {
         </main>
       </div>
       {toast && <div className="toast"><Check size={16} /> {toast}</div>}
-      <input ref={fileInputRef} className="visually-hidden" type="file" accept=".exe,.lnk" onChange={(event) => handleFiles(event.target.files)} />
+      <input ref={fileInputRef} className="visually-hidden" type="file" accept=".exe,.bat,.lnk" onChange={(event) => handleFiles(event.target.files)} />
       {modal && <Modal title={modal === 'settings' ? '设置' : modal === 'edit' ? '编辑应用' : '添加应用'} onClose={() => setModal(null)}><>{modal === 'settings' ? <SettingsPanel theme={theme} setTheme={setTheme} anime={anime} setAnime={setAnime} background={background} setBackground={setBackground} brandName={brandName} setBrandName={setBrandName} brandIcon={brandIcon} setBrandIcon={setBrandIcon} onReset={resetAppearance} onClose={() => setModal(null)} apps={apps} categories={categories} onImport={importState} onImportFolder={() => void importFolder()} onAddApp={openAddApp} /> : <AppForm app={editing} initialPath={pendingPath} shortcut={pendingShortcut} categories={categories} onPickFile={() => void pickExecutable()} onCancel={() => setModal(null)} onSave={(record) => { setApps((current) => editing ? current.map((item) => item.id === record.id ? record : item) : [record, ...current]); setPendingPath(''); setPendingShortcut(null); setModal(null); showToast(editing ? '应用已更新' : '应用已添加') }} />}</></Modal>}
       {categoryModal && <Modal title={categoryModal.mode === 'add' ? '新建分类' : '重命名分类'} onClose={() => setCategoryModal(null)}><CategoryForm category={categoryModal.category} onCancel={() => setCategoryModal(null)} onSave={saveCategory} /></Modal>}
       {categoryToDelete && <Modal title="删除分类" onClose={() => setCategoryToDelete(null)}><div className="form category-delete-form"><p>分类“{categoryToDelete.name}”下有 {categoryCounts[categoryToDelete.id] || 0} 个应用。</p><button className="setting-row" onClick={() => confirmDeleteCategory(false)}><span><FolderOpen size={17} /> 删除分类，保留应用</span><ChevronDown size={15} className="rotate-270" /></button><button className="setting-row danger-setting-row" onClick={() => confirmDeleteCategory(true)}><span><Trash2 size={17} /> 删除分类及所有应用</span><ChevronDown size={15} className="rotate-270" /></button><div className="form-actions"><button className="secondary-btn" onClick={() => setCategoryToDelete(null)}>取消</button></div></div></Modal>}
@@ -713,7 +721,7 @@ function AppCard({ app, categoryName, launching, selected, onSelect, onLaunch, o
   return <article data-app-id={app.id} tabIndex={-1} className={`app-card ${selected ? 'keyboard-selected' : ''} ${!app.healthy ? 'is-invalid' : ''} ${layout === 'list' ? 'list-card' : ''}`}><div className="card-main card-main-clickable" onClick={onLaunch} role="button" tabIndex={app.healthy ? 0 : -1} onFocus={onSelect} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); onLaunch() } }}>{iconNode}<div className="app-info"><div className="app-name-row"><h3 title={app.name}>{app.name}</h3>{app.isFavorite && <Star size={14} className="favorite-indicator" fill="currentColor" />}</div><div className="app-meta"><span>{categoryName}</span><span className="meta-dot">·</span><span>{formatTime(app.lastLaunchedAt)}</span></div><p>{app.notes}</p></div></div>{!app.healthy && <div className="invalid-banner"><span className="invalid-icon">!</span><span>文件路径不可用</span><button onClick={(event) => { event.stopPropagation(); onRelocate() }}>重新定位</button></div>}<div className="card-bottom"><div className="launch-count"><Play size={12} fill="currentColor" /> 启动 {app.launchCount} 次</div><div className="card-actions"><button className="text-action" onClick={onLaunch} disabled={launching || !app.healthy}><Play size={14} fill="currentColor" /> {launching ? '启动中…' : '启动'}</button><div className="menu-wrap"><button className="more-btn" title="更多操作" onClick={() => setMenuOpen((open) => !open)}><MoreHorizontal size={18} /></button>{menuOpen && <div className="card-menu"><button onClick={() => { setMenuOpen(false); onFavorite() }}><Star size={14} /> {app.isFavorite ? '取消收藏' : '收藏'}</button><button onClick={() => { setMenuOpen(false); onEdit() }}><Pencil size={14} /> 编辑</button><button onClick={() => { setMenuOpen(false); onOpenDirectory() }}><FolderOpen size={14} /> 打开目录</button><button className="danger-action" onClick={() => { setMenuOpen(false); onRemove() }}><Trash2 size={14} /> 从启动器移除</button></div>}</div></div></div></article>
 }
 
-function EmptyState({ query, onAdd }: { query: string; onAdd: () => void }) { return <div className="empty-state"><div className="empty-icon"><Search size={28} /></div><h2>{query ? '没有找到匹配的应用' : '还没有应用'}</h2><p>{query ? '试试其他关键词，或检查应用名称和路径。' : '把常用的 .exe 文件集中到这里，一键开始工作。'}</p>{!query && <button className="add-app-btn empty-cta" onClick={onAdd}><Plus size={18} /> 添加第一个应用</button>}</div> }
+function EmptyState({ query, onAdd }: { query: string; onAdd: () => void }) { return <div className="empty-state"><div className="empty-icon"><Search size={28} /></div><h2>{query ? '没有找到匹配的应用' : '还没有应用'}</h2><p>{query ? '试试其他关键词，或检查应用名称和路径。' : '把常用的应用和批处理集中到这里，一键开始工作。'}</p>{!query && <button className="add-app-btn empty-cta" onClick={onAdd}><Plus size={18} /> 添加第一个应用</button>}</div> }
 
 function Modal({ title, onClose, children }: { title: string; onClose: () => void; children: ReactNode }) { return <div className="modal-backdrop" onMouseDown={onClose}><div className="modal" onMouseDown={(e) => e.stopPropagation()}><div className="modal-header"><h2>{title}</h2><button className="icon-btn" onClick={onClose} title="关闭"><X size={19} /></button></div>{children}</div></div> }
 
@@ -732,11 +740,11 @@ function AppForm({ app, initialPath, shortcut, categories, onPickFile, onCancel,
     if (initialPath && (!app || initialPath !== app.executablePath)) {
       setPath(initialPath)
       if (!app) setWorkingDirectory(normalizePath(initialPath).split('\\').slice(0, -1).join('\\'))
-      if (!app) setName((current) => current || initialPath.split(/[\\/]/).pop()?.replace(/\.exe$/i, '') || '')
+      if (!app) setName((current) => current || initialPath.split(/[\\/]/).pop()?.replace(/\.(exe|bat)$/i, '') || '')
     }
   }, [app, initialPath])
   useEffect(() => {
-    if (!isTauri() || !path.toLowerCase().endsWith('.exe') || iconSource === 'custom') return
+    if (!isTauri() || !isLaunchablePath(path) || iconSource === 'custom') return
     let cancelled = false
     void invokeDesktop<string>('read_application_icon', { path: normalizePath(path) }).then((icon) => {
       if (!cancelled && typeof icon === 'string' && icon.startsWith('data:image/')) { setIconPath(icon); setIconSource('system') }
@@ -745,12 +753,12 @@ function AppForm({ app, initialPath, shortcut, categories, onPickFile, onCancel,
   }, [iconSource, path])
   const save = () => {
     if (!name.trim() || !path.trim()) return
-    if (!path.trim().toLowerCase().endsWith('.exe')) { setError('目标文件必须是 .exe 可执行文件'); return }
+    if (!isLaunchablePath(path)) { setError('目标文件必须是 .exe 或 .bat 文件'); return }
     setError('')
     const executablePath = normalizeExecutablePath(path)
     onSave({ id: app?.id || `app-${Date.now()}`, name: name.trim(), executablePath, categoryId, icon: app?.icon || name.trim().slice(0, 2).toUpperCase(), iconPath: iconPath || undefined, iconSource: iconPath ? (iconSource || 'custom') : undefined, isFavorite: app?.isFavorite || false, notes: notes.trim(), arguments: args.trim(), workingDirectory: normalizePath(workingDirectory) || executablePath.split('\\').slice(0, -1).join('\\'), launchCount: app?.launchCount || 0, lastLaunchedAt: app?.lastLaunchedAt || null, createdAt: app?.createdAt || new Date().toISOString().slice(0, 10), healthy: true })
   }
-  return <div className="form"><label>应用名称<input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：Visual Studio Code" autoFocus /></label><label>可执行文件路径<div className="path-input"><input value={path} onChange={(e) => { setPath(e.target.value); setError('') }} placeholder="选择 .exe 文件" /><button title="选择文件" onClick={onPickFile}><FolderOpen size={17} /></button></div></label>{error && <div className="form-error">{error}</div>}<label>工作目录 <span className="label-hint">可选</span><input value={workingDirectory} onChange={(e) => setWorkingDirectory(e.target.value)} placeholder="默认使用 exe 所在目录" /></label><label>应用图标 <span className="label-hint">可选</span><div className="icon-picker-row"><div className="icon-preview">{iconPath ? <img src={iconPath} alt="" /> : <span>{app?.icon || name.trim().slice(0, 2).toUpperCase() || '??'}</span>}</div><button className="secondary-btn" type="button" onClick={() => iconInputRef.current?.click()}><FolderOpen size={15} /> 选择图片</button>{iconPath && <button className="icon-btn" type="button" title="移除自定义图标" onClick={() => { setIconPath(''); setIconSource('') }}><X size={16} /></button>}<input ref={iconInputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp,image/x-icon" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { setIconPath(String(reader.result)); setIconSource('custom') }; reader.readAsDataURL(file); event.target.value = '' }} /></div></label><label>所属分类<select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>{categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.name}</option>)}</select></label><label>启动参数 <span className="label-hint">可选</span><input value={args} onChange={(e) => setArgs(e.target.value)} placeholder="例如：--profile work" /></label><label>备注 <span className="label-hint">可选</span><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="写点便于识别的说明" rows={3} /></label><div className="form-note"><CircleHelp size={15} /> 支持拖拽或选择 .exe / .lnk；桌面版会解析快捷方式并读取程序图标。</div><div className="form-actions"><button className="secondary-btn" onClick={onCancel}>取消</button><button className="primary-btn" onClick={save} disabled={!name.trim() || !path.trim()}><Check size={16} /> 保存应用</button></div></div>
+  return <div className="form"><label>应用名称<input value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：Visual Studio Code" autoFocus /></label><label>启动文件路径<div className="path-input"><input value={path} onChange={(e) => { setPath(e.target.value); setError('') }} placeholder="选择 .exe 或 .bat 文件" /><button title="选择文件" onClick={onPickFile}><FolderOpen size={17} /></button></div></label>{error && <div className="form-error">{error}</div>}<label>工作目录 <span className="label-hint">可选</span><input value={workingDirectory} onChange={(e) => setWorkingDirectory(e.target.value)} placeholder="默认使用启动文件所在目录" /></label><label>应用图标 <span className="label-hint">可选</span><div className="icon-picker-row"><div className="icon-preview">{iconPath ? <img src={iconPath} alt="" /> : <span>{app?.icon || name.trim().slice(0, 2).toUpperCase() || '??'}</span>}</div><button className="secondary-btn" type="button" onClick={() => iconInputRef.current?.click()}><FolderOpen size={15} /> 选择图片</button>{iconPath && <button className="icon-btn" type="button" title="移除自定义图标" onClick={() => { setIconPath(''); setIconSource('') }}><X size={16} /></button>}<input ref={iconInputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp,image/x-icon" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; const reader = new FileReader(); reader.onload = () => { setIconPath(String(reader.result)); setIconSource('custom') }; reader.readAsDataURL(file); event.target.value = '' }} /></div></label><label>所属分类<select value={categoryId} onChange={(e) => setCategoryId(e.target.value)}>{categories.map((cat) => <option key={cat.id} value={cat.id}>{cat.name}</option>)}</select></label><label>启动参数 <span className="label-hint">可选</span><input value={args} onChange={(e) => setArgs(e.target.value)} placeholder="例如：--profile work" /></label><label>备注 <span className="label-hint">可选</span><textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="写点便于识别的说明" rows={3} /></label><div className="form-note"><CircleHelp size={15} /> 支持拖拽或选择 .exe / .bat / .lnk；桌面版会解析快捷方式并读取文件图标。</div><div className="form-actions"><button className="secondary-btn" onClick={onCancel}>取消</button><button className="primary-btn" onClick={save} disabled={!name.trim() || !path.trim()}><Check size={16} /> 保存应用</button></div></div>
 }
 
 function CategoryForm({ category, onCancel, onSave }: { category?: Category; onCancel: () => void; onSave: (name: string) => void }) { const [name, setName] = useState(category?.name || ''); return <div className="form"><label>分类名称<input value={name} onChange={(event) => setName(event.target.value)} autoFocus placeholder="例如：工作、游戏" /></label><div className="form-actions"><button className="secondary-btn" onClick={onCancel}>取消</button><button className="primary-btn" disabled={!name.trim()} onClick={() => onSave(name)}><Check size={16} /> 保存</button></div></div> }
@@ -782,7 +790,7 @@ function SettingsPanel({ theme, setTheme, anime, setAnime, background, setBackgr
     {theme === 'anime' && <div className="settings-section anime-customization"><div className="settings-title">二次元定制</div><div className="anime-setting-grid"><label>氛围<select value={anime.variant} onChange={(event) => updateAnime({ variant: event.target.value as AnimeVariant })}><option value="sakura">樱花放映室</option><option value="sky">晴空校园</option><option value="moon">月夜番外</option></select></label><label>卡片样式<select value={anime.cardStyle} onChange={(event) => updateAnime({ cardStyle: event.target.value as AnimeCardStyle })}><option value="ribbon">缎带票根</option><option value="polaroid">拍立得</option><option value="glass">玻璃立牌</option><option value="transparent">透明立牌</option></select></label><label>信息密度<select value={anime.density} onChange={(event) => updateAnime({ density: event.target.value as AnimeDensity })}><option value="airy">留白舒展</option><option value="dense">紧凑清单</option></select></label><label>场景装饰<select value={anime.decoration} onChange={(event) => updateAnime({ decoration: event.target.value as AnimeDecoration })}><option value="none">纯净留白</option><option value="sparkle">星屑纸纹</option><option value="tape">纸胶带</option><option value="sticker">贴纸角落</option></select></label><label>轻量动效<select value={anime.motion} onChange={(event) => updateAnime({ motion: event.target.value as AnimeMotion })}><option value="none">静止</option><option value="float">漂浮呼吸</option><option value="breathe">卡片呼吸</option><option value="shimmer">柔光扫过</option></select></label><label>左右图标间隔<select value={anime.iconSpacing} onChange={(event) => updateAnime({ iconSpacing: event.target.value as AnimeIconSpacing })}><option value="tight">紧凑</option><option value="normal">标准</option><option value="loose">舒展</option></select></label><label>卡片大小<select value={anime.cardSize} onChange={(event) => updateAnime({ cardSize: event.target.value as AnimeCardSize })}><option value="small">小巧</option><option value="medium">标准</option><option value="large">大图标</option></select></label><label>卡片间距<select value={anime.gridSpacing} onChange={(event) => updateAnime({ gridSpacing: event.target.value as AnimeGridSpacing })}><option value="tight">紧凑</option><option value="normal">标准</option><option value="wide">宽松</option></select></label></div></div>}
     <div className="settings-section"><div className="settings-title">背景</div><div className="background-controls"><label>纯色背景<input type="color" value={background.color} onChange={(event) => updateBackground({ color: event.target.value })} /></label><label>显示方式<select value={background.mode} onChange={(event) => updateBackground({ mode: event.target.value as BackgroundMode })}><option value="cover">填充</option><option value="contain">适应</option><option value="center">居中</option><option value="repeat">平铺</option></select></label><label>透明度 <output>{Math.round(background.opacity * 100)}%</output><input type="range" min="0" max="1" step="0.01" value={background.opacity} onChange={(event) => updateBackground({ opacity: Number(event.target.value) })} /></label><label>遮罩强度 <output>{Math.round(background.overlay * 100)}%</output><input type="range" min="0" max="1" step="0.01" value={background.overlay} onChange={(event) => updateBackground({ overlay: Number(event.target.value) })} /></label><label>模糊 <output>{background.blur}px</output><input type="range" min="0" max="20" step="1" value={background.blur} onChange={(event) => updateBackground({ blur: Number(event.target.value) })} /></label></div><div className="background-file-row"><button className="secondary-btn" onClick={() => backgroundInputRef.current?.click()}><FolderOpen size={15} /> {background.image ? '更换背景图片' : '选择背景图片'}</button>{background.image && <button className="icon-btn" title="移除背景图片" onClick={() => updateBackground({ image: '' })}><X size={16} /></button>}<input ref={backgroundInputRef} className="visually-hidden" type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { const file = event.target.files?.[0]; if (!file) return; if (file.size > 10 * 1024 * 1024) return; const reader = new FileReader(); reader.onload = () => updateBackground({ image: String(reader.result) }); reader.readAsDataURL(file); event.target.value = '' }} /></div></div>
     <div className="settings-section"><div className="settings-title">系统集成</div><label className="setting-row system-toggle"><span><AppWindow size={17} /> 开机自动启动<small>关闭窗口后保留在系统托盘，可用 Ctrl+Alt+Space 唤起</small></span><input type="checkbox" checked={autostart} disabled={!isTauri() || changingAutostart} onChange={toggleAutostart} /></label></div>
-    <div className="settings-section"><div className="settings-title">数据管理</div><button className="setting-row" onClick={onAddApp}><span><Plus size={17} /> 添加应用</span><ChevronDown size={15} className="rotate-270" /></button><button className="setting-row" onClick={() => { const blob = new Blob([JSON.stringify({ apps, categories, schemaVersion: 2 }, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'launcher-backup.json'; anchor.click(); URL.revokeObjectURL(url) }}><span><ArrowDownAZ size={17} /> 导出应用清单</span><ChevronDown size={15} className="rotate-270" /></button>{isTauri() ? <button className="setting-row" onClick={onImportFolder}><span><FolderOpen size={17} /> 导入文件夹</span><ChevronDown size={15} className="rotate-270" /></button> : <label className="setting-row setting-file-row"><span><FolderOpen size={17} /> 导入文件夹</span><input className="visually-hidden" type="file" accept=".exe,.lnk" multiple onChange={onImport} {...({ webkitdirectory: '', directory: '' } as any)} /><ChevronDown size={15} className="rotate-270" /></label>}<label className="setting-row setting-file-row"><span><FolderOpen size={17} /> 导入 JSON 清单</span><input className="visually-hidden" type="file" accept=".json,application/json" onChange={onImport} /><ChevronDown size={15} className="rotate-270" /></label><button className="setting-row" onClick={exportLogs}><span><ArrowDownAZ size={17} /> 导出启动日志</span><ChevronDown size={15} className="rotate-270" /></button><button className="setting-row" onClick={() => void invokeDesktop('open_log_directory', {}).then((opened) => { if (!opened) alert('桌面版可打开日志目录；当前浏览器预览未连接桌面文件系统。') })}><span><FolderOpen size={17} /> 打开日志目录</span><ChevronDown size={15} className="rotate-270" /></button></div>
+    <div className="settings-section"><div className="settings-title">数据管理</div><button className="setting-row" onClick={onAddApp}><span><Plus size={17} /> 添加应用</span><ChevronDown size={15} className="rotate-270" /></button><button className="setting-row" onClick={() => { const blob = new Blob([JSON.stringify({ apps, categories, schemaVersion: 2 }, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = 'launcher-backup.json'; anchor.click(); URL.revokeObjectURL(url) }}><span><ArrowDownAZ size={17} /> 导出应用清单</span><ChevronDown size={15} className="rotate-270" /></button>{isTauri() ? <button className="setting-row" onClick={onImportFolder}><span><FolderOpen size={17} /> 导入文件夹</span><ChevronDown size={15} className="rotate-270" /></button> : <label className="setting-row setting-file-row"><span><FolderOpen size={17} /> 导入文件夹</span><input className="visually-hidden" type="file" accept=".exe,.bat,.lnk" multiple onChange={onImport} {...({ webkitdirectory: '', directory: '' } as any)} /><ChevronDown size={15} className="rotate-270" /></label>}<label className="setting-row setting-file-row"><span><FolderOpen size={17} /> 导入 JSON 清单</span><input className="visually-hidden" type="file" accept=".json,application/json" onChange={onImport} /><ChevronDown size={15} className="rotate-270" /></label><button className="setting-row" onClick={exportLogs}><span><ArrowDownAZ size={17} /> 导出启动日志</span><ChevronDown size={15} className="rotate-270" /></button><button className="setting-row" onClick={() => void invokeDesktop('open_log_directory', {}).then((opened) => { if (!opened) alert('桌面版可打开日志目录；当前浏览器预览未连接桌面文件系统。') })}><span><FolderOpen size={17} /> 打开日志目录</span><ChevronDown size={15} className="rotate-270" /></button></div>
     <div className="settings-section"><div className="settings-title">关于</div><div className="about-row"><Zap size={17} /> <span>启动器 <small>本地优先 · v{APP_VERSION}</small></span></div></div><div className="form-actions"><button className="secondary-btn" onClick={onReset}><RotateCcw size={15} /> 恢复默认</button><button className="primary-btn" onClick={onClose}>完成</button></div>
   </div>
 }

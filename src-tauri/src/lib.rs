@@ -13,10 +13,12 @@ use tauri::{Manager, WindowEvent};
 const CURRENT_SCHEMA_VERSION: u64 = 3;
 const STATE_FILE: &str = "launcher-state.json";
 const WINDOW_SIZE_FILE: &str = "launcher-window.json";
+const TRAY_ID: &str = "launcher-tray";
+const MAX_TRAY_ICON_BYTES: usize = 10 * 1024 * 1024;
 static STATE_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
-fn is_executable_file(path: &Path) -> bool {
-  path.is_file() && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+fn is_launchable_file(path: &Path) -> bool {
+  path.is_file() && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("exe") || extension.eq_ignore_ascii_case("bat"))
 }
 
 fn normalize_command_path(value: &str) -> String {
@@ -139,7 +141,7 @@ fn save_window_size(app: tauri::AppHandle, width: u32, height: u32) -> Result<()
 }
 
 #[tauri::command]
-fn path_exists(path: String) -> bool { is_executable_file(Path::new(&normalize_executable_path(&path))) }
+fn path_exists(path: String) -> bool { is_launchable_file(Path::new(&normalize_executable_path(&path))) }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -237,7 +239,7 @@ fn executable_icon_data_url(_path: &Path) -> Result<String, String> { Err("当�
 #[tauri::command]
 fn read_application_icon(path: String) -> Result<String, String> {
   let path = Path::new(&path);
-  if !is_executable_file(path) { return Err("目标文件不存在或不是 .exe".into()); }
+  if !is_launchable_file(path) { return Err("目标文件不存在或不是 .exe/.bat".into()); }
   executable_icon_data_url(path)
 }
 
@@ -258,7 +260,7 @@ fn collect_application_files(directory: &Path, files: &mut Vec<PathBuf>) -> Resu
     let file_type = entry.file_type().map_err(|error| error.to_string())?;
     if file_type.is_dir() {
       collect_application_files(&path, files)?;
-    } else if file_type.is_file() && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("exe") || extension.eq_ignore_ascii_case("lnk")) {
+    } else if file_type.is_file() && path.extension().is_some_and(|extension| extension.eq_ignore_ascii_case("exe") || extension.eq_ignore_ascii_case("bat") || extension.eq_ignore_ascii_case("lnk")) {
       files.push(path);
     }
   }
@@ -279,7 +281,7 @@ fn discover_applications(path: String) -> Result<Vec<DiscoveredApplication>, Str
     } else {
       (file.clone(), String::new(), file.parent()?.to_string_lossy().into_owned())
     };
-    if !is_executable_file(&executable) { return None; }
+    if !is_launchable_file(&executable) { return None; }
     let name = file.file_stem()?.to_string_lossy().into_owned();
     let icon_path = executable_icon_data_url(&executable).ok();
     Some(DiscoveredApplication { name, executable_path: executable.to_string_lossy().into_owned(), arguments, working_directory, icon_path })
@@ -292,7 +294,7 @@ fn discover_applications(path: String) -> Result<Vec<DiscoveredApplication>, Str
 fn launch_app(executable_path: String, arguments: Vec<String>, working_directory: Option<String>) -> Result<(), String> {
   let normalized_executable_path = normalize_executable_path(&executable_path);
   let executable = Path::new(&normalized_executable_path);
-  if !is_executable_file(executable) { return Err(format!("目标文件不存在或不是 .exe: {normalized_executable_path}")); }
+  if !is_launchable_file(executable) { return Err(format!("目标文件不存在或不是 .exe/.bat: {normalized_executable_path}")); }
   let mut command = Command::new(executable);
   command.args(arguments);
   let requested_working_directory = working_directory.as_deref();
@@ -339,6 +341,42 @@ fn show_main_window(app: &tauri::AppHandle) {
   if let Some(window) = app.get_webview_window("main") { let _ = window.show(); let _ = window.unminimize(); let _ = window.set_focus(); }
 }
 
+fn tray_image_from_data_url(data_url: &str) -> Result<tauri::image::Image<'static>, String> {
+  use image::{imageops::overlay, DynamicImage, RgbaImage};
+
+  let (header, encoded) = data_url.split_once(',').ok_or("托盘图标数据格式无效")?;
+  if !header.starts_with("data:image/") || !header.ends_with(";base64") { return Err("托盘图标必须是 base64 图片".into()); }
+  if encoded.len() > MAX_TRAY_ICON_BYTES * 4 / 3 + 4 { return Err("托盘图标不能超过 10 MB".into()); }
+  let bytes = STANDARD.decode(encoded).map_err(|error| format!("托盘图标无法解码: {error}"))?;
+  if bytes.len() > MAX_TRAY_ICON_BYTES { return Err("托盘图标不能超过 10 MB".into()); }
+
+  let source = image::load_from_memory(&bytes).map_err(|error| format!("托盘图标无法读取: {error}"))?;
+  let resized = source.thumbnail(64, 64).to_rgba8();
+  let mut canvas = RgbaImage::new(64, 64);
+  overlay(&mut canvas, &resized, ((64 - resized.width()) / 2) as i64, ((64 - resized.height()) / 2) as i64);
+  let rgba = DynamicImage::ImageRgba8(canvas).into_rgba8();
+  Ok(tauri::image::Image::new_owned(rgba.into_raw(), 64, 64))
+}
+
+fn configured_tray_icon(app: &tauri::AppHandle) -> Result<tauri::image::Image<'static>, String> {
+  let custom_icon = load_launcher_state(app.clone()).ok()
+    .and_then(|state| state.pointer("/preferences/brandIcon").and_then(Value::as_str).map(str::to_owned))
+    .filter(|icon| !icon.is_empty());
+  if let Some(icon) = custom_icon {
+    if let Ok(image) = tray_image_from_data_url(&icon) { return Ok(image); }
+  }
+  app.default_window_icon().cloned().map(tauri::image::Image::to_owned).ok_or("应用图标不可用".into())
+}
+
+#[tauri::command]
+fn set_tray_icon(app: tauri::AppHandle, icon_data_url: Option<String>) -> Result<(), String> {
+  let icon = match icon_data_url.as_deref().filter(|icon| !icon.is_empty()) {
+    Some(icon) => tray_image_from_data_url(icon)?,
+    None => app.default_window_icon().cloned().ok_or("应用图标不可用")?,
+  };
+  app.tray_by_id(TRAY_ID).ok_or("系统托盘尚未初始化")?.set_icon(Some(icon)).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn frontend_ready(app: tauri::AppHandle) { show_main_window(&app); }
 
@@ -368,6 +406,16 @@ mod tests {
   #[test]
   fn rejects_future_state_schema() { assert!(migrate_launcher_state(json!({ "schemaVersion": CURRENT_SCHEMA_VERSION + 1, "apps": [], "categories": [] })).is_err()); }
   #[test]
+  fn normalizes_custom_tray_icon() {
+    let mut encoded = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image::RgbaImage::new(12, 8)).write_to(&mut encoded, image::ImageFormat::Png).expect("test icon should encode");
+    let data_url = format!("data:image/png;base64,{}", STANDARD.encode(encoded.into_inner()));
+    let icon = tray_image_from_data_url(&data_url).expect("valid image data URL should become a tray icon");
+    assert_eq!((icon.width(), icon.height()), (64, 64));
+  }
+  #[test]
+  fn rejects_invalid_tray_icon_data() { assert!(tray_image_from_data_url("not-an-image").is_err()); }
+  #[test]
   fn rejects_missing_executable() { assert!(launch_app("C:\\this-path-does-not-exist\\missing.exe".into(), vec![], None).is_err()); }
   #[test]
   fn rejects_non_executable_file() {
@@ -396,6 +444,25 @@ mod tests {
   }
   #[cfg(target_os = "windows")]
   #[test]
+  fn launches_windows_batch_file() {
+    let directory = std::env::temp_dir().join(format!("launcher-batch-test-{}", std::process::id()));
+    let script = directory.join("launch test.bat");
+    let marker = directory.join("launched.txt");
+    let _ = fs::remove_dir_all(&directory);
+    fs::create_dir_all(&directory).expect("batch test directory should be created");
+    fs::write(&script, "@echo off\r\n> \"%~dp0launched.txt\" echo launched\r\n").expect("batch test script should be written");
+
+    assert!(path_exists(script.to_string_lossy().into_owned()));
+    launch_app(script.to_string_lossy().into_owned(), vec![], None).expect("batch file should launch");
+    for _ in 0..100 {
+      if marker.exists() { break; }
+      std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    assert!(marker.exists(), "batch file should create its marker");
+    let _ = fs::remove_dir_all(&directory);
+  }
+  #[cfg(target_os = "windows")]
+  #[test]
   fn reads_windows_executable_icon() {
     let executable = Path::new(&std::env::var("SystemRoot").expect("SystemRoot must be available")).join("System32").join("cmd.exe");
     let data_url = executable_icon_data_url(&executable).expect("cmd.exe icon should be readable");
@@ -410,9 +477,10 @@ mod tests {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
+    .plugin(tauri_plugin_single_instance::init(|app, _arguments, _working_directory| show_main_window(app)))
     .plugin(tauri_plugin_dialog::init())
     .plugin(tauri_plugin_autostart::Builder::new().app_name("启动器").build())
-    .invoke_handler(tauri::generate_handler![frontend_ready, load_launcher_state, save_launcher_state, load_window_size, save_window_size, path_exists, resolve_shortcut, read_application_icon, discover_applications, launch_app, open_directory, open_log_directory, set_autostart, get_autostart])
+    .invoke_handler(tauri::generate_handler![frontend_ready, load_launcher_state, save_launcher_state, load_window_size, save_window_size, path_exists, resolve_shortcut, read_application_icon, discover_applications, launch_app, open_directory, open_log_directory, set_autostart, get_autostart, set_tray_icon])
     .setup(|app| {
       if let Some(window) = app.get_webview_window("main") {
         if let Ok(Some(size)) = load_window_size(app.handle().clone()) {
@@ -421,13 +489,20 @@ pub fn run() {
       }
       if cfg!(debug_assertions) { app.handle().plugin(tauri_plugin_log::Builder::default().level(log::LevelFilter::Info).build())?; }
       #[cfg(desktop)] {
-        use tauri::{menu::{Menu, MenuItem}, tray::TrayIconBuilder};
+        use tauri::{menu::{Menu, MenuItem}, tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}};
         use tauri_plugin_global_shortcut::ShortcutState;
         let show = MenuItem::with_id(app, "show", "显示启动器", true, None::<&str>)?;
         let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
         let menu = Menu::with_items(app, &[&show, &quit])?;
-        let icon = app.default_window_icon().cloned().ok_or("应用图标不可用")?;
-        TrayIconBuilder::with_id("launcher-tray").menu(&menu).icon(icon).tooltip("启动器").on_menu_event(|app, event| match event.id().as_ref() { "show" => show_main_window(app), "quit" => app.exit(0), _ => {} }).build(app)?;
+        let icon = configured_tray_icon(app.handle())?;
+        TrayIconBuilder::with_id(TRAY_ID).menu(&menu).icon(icon).tooltip("启动器")
+          .on_menu_event(|app, event| match event.id().as_ref() { "show" => show_main_window(app), "quit" => app.exit(0), _ => {} })
+          .on_tray_icon_event(|tray, event| {
+            if matches!(event, TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }) {
+              show_main_window(tray.app_handle());
+            }
+          })
+          .build(app)?;
         app.handle().plugin(tauri_plugin_global_shortcut::Builder::new().with_shortcuts(["ctrl+alt+space"])? .with_handler(|app, _shortcut, event| { if event.state == ShortcutState::Pressed { show_main_window(app); } }).build())?;
       }
       Ok(())
