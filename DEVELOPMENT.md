@@ -1,0 +1,180 @@
+# 启动器开发进度
+
+## 当前版本
+
+当前版本：**4.1.0**
+
+项目已经从 React/Vite 浏览器原型接入 Tauri 2 桌面容器。前端数据默认保存在浏览器/Tauri WebView 的本地存储中，桌面端通过 Rust 命令执行本地文件相关操作。
+
+## 已完成
+
+- 应用添加、编辑、删除和二次确认
+- `.exe` 路径校验、失效路径提示和重新定位入口
+- 应用分类、重命名、删除分类和数量统计
+- 全局搜索、名称/最近使用/使用次数/添加时间排序
+- 网格、列表、紧凑三种视图
+- 收藏、最近使用、键盘导航、`Ctrl/Cmd + K` 搜索
+- 启动参数、工作目录、备注和自定义图标
+- 本地 JSON 持久化，当前数据 schema 为 `2`
+- 应用清单 JSON 导入/导出
+- 文件夹批量导入 `.exe`/`.lnk`（快捷方式暂标记为不可直接启动）
+- 浅色、深色、跟随系统、二次元、赛博朋克主题
+- 背景图片、纯色、填充/适应/居中/平铺、透明度、遮罩和模糊
+- 启动日志记录和 JSON 导出
+- Tauri 2 Rust 命令：`launch_app`、`path_exists`、`open_directory`、`open_log_directory`
+- Tauri 原生文件选择器：添加/重新定位应用时选择 `.exe`，直接保存规范化绝对路径；浏览器预览保留 File API 降级
+- Vite 开发服务器已忽略 `src-tauri` 构建目录，避免 Windows 文件监视冲突
+
+## 运行方式
+
+PowerShell 如果拦截 `npm.ps1`，请使用 `npm.cmd`：
+
+```powershell
+Set-Location "D:\codex\启动器"
+npm.cmd run tauri:dev
+```
+
+也可以在命令提示符中运行：
+
+```cmd
+cd /d D:\codex\启动器
+npm run tauri:dev
+```
+
+生产构建：
+
+```powershell
+npm.cmd run tauri:build
+```
+
+## 验证记录
+
+- `npm.cmd run build`：通过
+- `cargo check --manifest-path src-tauri/Cargo.toml`：应在 Rust 工具链可用时执行
+- Tauri 开发模式：已成功启动，Vite 地址为 `http://127.0.0.1:5173/`
+- 已验证设置、主题切换、紧凑视图菜单、应用编辑和浏览器降级提示
+
+## 已知限制
+
+1. 种子应用中的路径是演示路径，不一定存在于当前电脑。Tauri 启动后会执行真实文件检查，不存在的路径会显示“文件路径不可用”，需要重新定位。
+2. `.lnk` 导入目前只保存记录，不解析快捷方式目标；桌面端快捷方式解析属于后续增强项。
+3. 浏览器预览不能真正启动 Windows 程序，只能显示模拟反馈；Tauri 桌面模式才会调用 Rust 启动命令。
+4. 数据目前使用 WebView 本地存储，尚未迁移到 SQLite；异常退出原子写入和跨设备迁移仍需后续完善。
+5. 日志目录命令会创建并打开 `%LOCALAPPDATA%\\Launcher\\logs`，当前尚未把 Tauri 日志插件输出统一重定向到该目录。
+
+## 下一步建议
+
+- 解析 `.lnk` 并读取 Windows 可执行文件图标
+- 将应用数据迁移到版本化 SQLite/JSON 文件，并增加迁移测试
+- 增加托盘、全局快捷键、开机启动和安装包验收
+
+# 启动器 4.2.0 开发进度
+
+## 本次交付
+
+- 接入 Tauri 原生 `.exe` 文件选择器；添加和重新定位应用可取得规范化绝对路径。
+- 修正 `launch_app` 的 IPC 参数映射：前端发送 `executablePath` 与 `workingDirectory`，匹配 Tauri 默认 camelCase 约定。
+- 桌面端“刷新状态”改为调用 Rust `path_exists`，重新检查真实文件是否存在；浏览器预览仍明确提示无法访问本地文件系统。
+- Rust 启动命令仅接受实际存在的 `.exe` 常规文件，拒绝缺失路径和非可执行文件。
+- 版本号已统一为 `4.2.0`：`package.json`、`src-tauri/Cargo.toml`、`src-tauri/tauri.conf.json` 和应用界面。
+
+## 验证结果
+
+- `npm.cmd run build`：通过。
+- `cargo check --manifest-path src-tauri/Cargo.toml`：通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml`：通过，3 项测试均成功。
+  - 缺失 `.exe` 路径被拒绝。
+  - 已存在的非 `.exe` 文件被拒绝。
+  - Windows `cmd.exe` 可由同一启动实现成功启动。
+- Tauri 开发容器已编译启动；原生“选择可执行文件”系统对话框可正常打开。
+
+## 已知限制
+
+1. `.lnk` 导入仍只保存记录，尚未解析真实目标路径。
+2. 应用数据目前保存在 WebView 本地存储，尚未迁移至版本化 SQLite/JSON 文件。
+3. 日志目录已可打开，但 Tauri 日志插件尚未统一输出至该目录。
+
+## 后续建议
+
+- 解析 `.lnk` 并读取 Windows 可执行文件图标。
+- 将应用数据迁移到版本化 SQLite/JSON 文件，并增加迁移测试。
+- 增加托盘、全局快捷键、开机启动和安装包验收。
+
+# 启动器 4.3.0 开发进度
+
+## 本次交付
+
+- 自定义启动器图标使用透明背景与 `contain` 显示方式，移除原有品牌色底和阴影，主题覆盖规则也保持一致。
+- 原生文件选择器现在接受 `.exe` 与 `.lnk`；`.lnk` 通过 Rust `lnk` 解析目标、参数、工作目录和图标位置，再回填到应用表单。
+- Windows Shell 图标读取已接入：从真实 `.exe` 提取图标并转换为 PNG data URL，自动作为应用图标；读取失败时仍保留文字图标回退。
+- 应用状态迁移为 Tauri 应用数据目录中的 `launcher-state.json`，统一保存应用、分类与外观偏好；文件使用临时文件重命名写入，避免中断写入产生半个 JSON 文件。
+- 数据格式升级到 `schemaVersion: 3`，实现 v1/v2 到 v3 的迁移与未来版本拒绝策略；首次桌面启动会先保留已有 WebView 数据，再写入原生状态文件。
+- 增加系统托盘菜单（显示启动器、退出）、关闭窗口隐藏到托盘、全局快捷键 `Ctrl+Alt+Space` 唤起窗口，以及设置页中的显式开机启动开关。
+- 版本号统一为 `4.3.0`，并启用 Tauri tray-icon 特性、自动启动和全局快捷键插件。
+
+## 验证结果
+
+- `npm.cmd run build`：通过。
+- `cargo check --manifest-path src-tauri/Cargo.toml`：通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml`：通过，6 项测试均成功。
+  - v1 数据迁移至 schema v3。
+  - 未来 schema 版本被拒绝。
+  - 缺失和非 `.exe` 路径被拒绝。
+  - Windows `cmd.exe` 可正常启动。
+  - Windows `cmd.exe` 图标可读取并编码为 PNG data URL。
+- Tauri 4.3.0 开发进程已成功启动；本地浏览器回归确认版本标识和系统集成设置可正常渲染。
+- 安装包构建验收完成：
+  - `src-tauri/target/release/bundle/msi/launcher_4.3.0_x64_en-US.msi`
+  - `src-tauri/target/release/bundle/nsis/launcher_4.3.0_x64-setup.exe`
+  - NSIS 安装程序文件元数据为 `FileVersion/ProductVersion 4.3.0`。
+
+## 已知限制
+
+1. `.lnk` 解析依赖快捷方式内的本地路径或相对路径信息；仅含 Shell namespace 目标的快捷方式无法作为 `.exe` 启动项导入。
+2. 安装包已做构建与文件元数据验收，未在当前机器静默安装，以避免修改用户现有的软件安装状态。
+
+# 本次修复记录（2026-08-30）
+
+## 已处理
+
+- Tauri 监听窗口物理尺寸变化，并将最近一次有效尺寸保存到应用数据目录的 `launcher-window.json`；下次启动会恢复上次关闭前的窗口尺寸。
+- 窗口尺寸限制为最小 `480x360`、最大 `16384x16384`，避免异常值破坏窗口显示。
+- 新增应用保存时不再自动写入“未添加备注”。
+- 文件夹扫描导入、浏览器文件夹导入和 JSON 清单导入的应用备注统一为空字符串。
+
+## 验证结果
+
+- `npm.cmd run build`：通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml`：通过，6 项测试均成功。
+- 窗口尺寸恢复使用 Tauri `PhysicalSize`，以物理像素保存，适配高 DPI 显示器。
+
+## 后续开发建议
+
+1. 保存窗口位置以及当前显示器标识；恢复前检查显示器仍然存在，避免窗口被恢复到已断开的副屏。
+2. 为窗口尺寸持久化增加集成测试，覆盖首次启动、调整尺寸、重启恢复和异常尺寸文件。
+3. 把窗口状态、应用清单和外观设置合并为统一版本化配置，减少多个 JSON 文件之间的迁移复杂度。
+4. 为导入流程增加预览和去重确认，展示将导入的路径、图标和应用数量后再写入清单。
+5. 增加图标缓存失效策略，例如检测 exe 修改时间或文件哈希变化后再重新读取图标，降低启动时的 Shell 调用次数。
+
+# 启动失败修复记录（2026-08-30）
+
+## 已处理
+
+- `launch_app` 启动前会清理 exe 路径首尾空白和包裹引号，兼容旧记录或手工填写的带引号路径。
+- 工作目录只有在实际存在且为目录时才会传给 Windows 进程；工作目录失效时自动回退到 exe 所在目录，避免 `program path has no file` 启动错误。
+- `path_exists` 与前端启动参数使用相同的路径清理规则，减少状态检查通过但启动参数仍带脏数据的情况。
+- 启动失败信息会包含实际 exe 路径和最终使用的工作目录，方便定位单条应用记录的问题。
+
+## 验证结果
+
+- `npm run build`：通过。
+- `cargo test --manifest-path src-tauri/Cargo.toml`：通过，8 项测试均成功。
+  - 路径包裹引号清理。
+  - 带引号 exe 与失效工作目录的启动回退。
+  - 缺失和非 `.exe` 路径拒绝。
+
+## 后续开发建议
+
+1. 在编辑应用时增加“测试启动”按钮，只启动一次并显示完整错误，减少用户反复点击排查的成本。
+2. 保存 exe 文件的修改时间或文件标识；检测到文件被移动、替换后，提示重新定位并刷新图标。
+3. 对启动参数做更完整的 Windows 命令行解析，兼容带空格路径、转义引号和 `%VAR%` 环境变量。
